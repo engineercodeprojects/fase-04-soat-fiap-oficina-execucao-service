@@ -170,12 +170,6 @@ jobs:
           YAML
           sed -i 's/^          //' k8s/secret.yaml
 
-      - name: Mensageria (vars do stage messaging/) no ConfigMap
-        if: steps.guard.outputs.configured == 'true' && steps.guard.outputs.eks == 'true'
-        run: |
-          sed -i "s|__SNS_TOPIC_ARN__|${{ vars.SNS_TOPIC_ARN }}|g; s|__SQS_QUEUE_URL__|${{ vars.SQS_QUEUE_URL }}|g" k8s/configmap.yaml
-          [ -n "${{ vars.SNS_TOPIC_ARN }}" ] || echo "::warning::var SNS_TOPIC_ARN ausente — o servico sobe sem broker (so eventos in-process)."
-
       - name: Deploy (kustomize) + migrations
         if: steps.guard.outputs.configured == 'true' && steps.guard.outputs.eks == 'true'
         run: |

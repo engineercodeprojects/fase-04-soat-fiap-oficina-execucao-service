@@ -1,5 +1,6 @@
-# Desenvolvimento local: Postgres proprio + LocalStack (SNS/SQS) com a topologia
-# da RFC-0006. O servico roda fora do compose (`npm run start:dev`).
+# Desenvolvimento local: Postgres proprio. O servico roda fora do compose
+# (`npm run start:dev`). Sem broker: a comunicacao com o OS Service e HTTP
+# (RFC-0008) — aponte OS_SERVICE_URL para o OS rodando localmente.
 services:
   postgres:
     image: postgres:16-alpine
@@ -9,13 +10,5 @@ services:
     volumes: ['pgdata:/var/lib/postgresql/data']
     healthcheck:
       { test: ['CMD-SHELL', 'pg_isready -U postgres'], interval: 5s, timeout: 5s, retries: 10 }
-  localstack:
-    image: localstack/localstack:3
-    ports: ['4566:4566']
-    environment: { SERVICES: 'sns,sqs,dynamodb', AWS_DEFAULT_REGION: us-east-1 }
-    volumes:
-      - ./node_modules/@guilhermeqmaia/oficina-kit/scripts/messaging-local.sh:/etc/localstack/init/ready.d/10-messaging.sh:ro
-    healthcheck:
-      { test: ['CMD', 'awslocal', 'sqs', 'list-queues'], interval: 5s, timeout: 5s, retries: 20 }
 volumes:
   pgdata:
