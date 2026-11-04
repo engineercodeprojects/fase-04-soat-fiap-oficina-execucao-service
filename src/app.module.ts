@@ -13,7 +13,6 @@ import { SERVICE_NAME } from './config/service-name';
 import { THROTTLER_LIMIT, THROTTLER_TTL_MS, shouldSkipThrottling } from './config/throttler.config';
 import { PrismaModule } from './prisma/prisma.module';
 import { PrismaHealthIndicator } from './health/prisma-health.indicator';
-import { messagingModule } from './messaging/messaging.config';
 
 @Module({
   imports: [
@@ -37,8 +36,7 @@ import { messagingModule } from './messaging/messaging.config';
     }),
     MetricsModule.forRoot({ serviceName: SERVICE_NAME }),
     HealthModule.forRoot({ imports: [PrismaModule], indicators: [PrismaHealthIndicator] }),
-    InProcessMessagingModule,
-    ...messagingModule(),
+    InProcessMessagingModule, // eventos de dominio in-process (EventEmitter2); sem broker (RFC-0008)
     ThrottlerModule.forRoot({
       throttlers: [{ ttl: THROTTLER_TTL_MS, limit: THROTTLER_LIMIT }],
       skipIf: (context) => shouldSkipThrottling(process.env, context),

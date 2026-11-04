@@ -17,9 +17,9 @@ data:
   # Rate limiting e da borda (API Gateway, ADR-0005); atras do NLB o IP de origem e unico.
   THROTTLER_DISABLED: 'true'
   AWS_REGION: 'us-east-1'
-  # Preenchidos pelo CD a partir das vars SNS_TOPIC_ARN / SQS_QUEUE_URL (stage messaging/ do infra-k8s)
-  SNS_TOPIC_ARN: '__SNS_TOPIC_ARN__'
-  SQS_QUEUE_URL: '__SQS_QUEUE_URL__'
+  # OS Service pelo DNS interno do cluster (RFC-0008): callbacks POST /ordens-servico/{numero}/eventos.
+  # Chamadas entre servicos nao passam pelo API Gateway.
+  OS_SERVICE_URL: 'http://oficina-app:3000'
   DD_TRACE_ENABLED: 'true'
   DD_SERVICE: 'oficina-execucao-service'
   DD_ENV: 'producao'
