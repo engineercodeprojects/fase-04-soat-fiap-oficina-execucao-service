@@ -1,5 +1,5 @@
-# Variaveis NAO sensiveis. Segredos: Secret `oficina-execucao-service-app` (JWT_SECRET)
-# e `oficina-execucao-service-db` (DATABASE_URL), ambos sincronizados pelo CD.
+# Variaveis NAO sensiveis. Segredo: Secret `oficina-execucao-service-app` (JWT_SECRET),
+# sincronizado pelo CD. DynamoDB usa as credenciais do pod (LabRole/IRSA) — sem segredo de banco.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -13,12 +13,14 @@ data:
   NODE_ENV: 'production'
   PORT: '3002'
   JWT_ISSUER: 'oficina-auth-lambda'
-  DB_SSL: 'true'
   # Rate limiting e da borda (API Gateway, ADR-0005); atras do NLB o IP de origem e unico.
   THROTTLER_DISABLED: 'true'
   AWS_REGION: 'us-east-1'
-  # OS Service pelo DNS interno do cluster (RFC-0008): callbacks POST /ordens-servico/{numero}/eventos.
-  # Chamadas entre servicos nao passam pelo API Gateway.
+  # Tabelas DynamoDB provisionadas pelo Terraform (repo infra-db): <prefixo>execucoes,
+  # <prefixo>servicos, <prefixo>produtos, <prefixo>movimentacoes_estoque.
+  DYNAMODB_TABLE_PREFIX: 'oficina-'
+  # OS Service pelo DNS interno do cluster; chamadas entre servicos nao passam pelo API Gateway.
+  # Contrato configuravel por OS_SERVICE_HTTP_METHOD / *_PATH / STATUS_MAP (ver README).
   OS_SERVICE_URL: 'http://oficina-app:3000'
   DD_TRACE_ENABLED: 'true'
   DD_SERVICE: 'oficina-execucao-service'

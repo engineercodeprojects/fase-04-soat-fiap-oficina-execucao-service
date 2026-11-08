@@ -4,7 +4,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npx prisma generate && npm run build
+RUN npm run build
 
 # ─── Stage 2: runtime ────────────────────────────────────────────────────────
 FROM node:20-alpine AS runtime
@@ -13,13 +13,9 @@ WORKDIR /app
 RUN npm install -g npm@11 && npm cache clean --force
 COPY --chown=node:node package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY --chown=node:node --from=builder /app/node_modules/prisma ./node_modules/prisma
-COPY --chown=node:node --from=builder /app/node_modules/.bin/prisma ./node_modules/.bin/prisma
 COPY --chown=node:node --from=builder /app/dist ./dist
-COPY --chown=node:node prisma ./prisma
-COPY --chown=node:node prisma.config.ts ./prisma.config.ts
-COPY --chown=node:node --from=builder /app/node_modules/dotenv ./node_modules/dotenv
 USER node
 EXPOSE 3002
-HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 CMD wget -qO- http://localhost:3002/health || exit 1
-CMD ["sh", "-c", "npx prisma migrate deploy && exec node dist/main.js"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 CMD wget -qO- http://localhost:3002/health || exit 1
+# Tabelas DynamoDB sao provisionadas pelo Terraform (infra-db): sem migracao no boot.
+CMD ["node", "dist/main.js"]

@@ -7,7 +7,6 @@ resources:
   - deployment.yaml
   - service.yaml
   - hpa.yaml
-  - migrations-job.yaml
   - secret.yaml # gerado pelo CD a partir do Secrets Manager (nao versionado)
 images:
   - name: oficina-execucao-service

@@ -1,6 +1,6 @@
 import { validateEnv } from './env.validation';
 
-const ok = { JWT_SECRET: 'x'.repeat(40), DATABASE_URL: 'postgresql://u:p@h:5432/db' };
+const ok = { JWT_SECRET: 'x'.repeat(40), OS_SERVICE_URL: 'http://localhost:3000' };
 
 describe('validateEnv', () => {
   it('aceita configuracao valida', () => expect(validateEnv(ok)).toBe(ok));
@@ -14,6 +14,16 @@ describe('validateEnv', () => {
     ));
   it('tolera segredo curto fora de producao', () =>
     expect(() => validateEnv({ ...ok, JWT_SECRET: 'curto' })).not.toThrow());
-  it('exige DATABASE_URL postgres', () =>
-    expect(() => validateEnv({ ...ok, DATABASE_URL: 'mysql://x' })).toThrow(/DATABASE_URL/));
+  it('rejeita DYNAMODB_ENDPOINT que nao e URL', () =>
+    expect(() => validateEnv({ ...ok, DYNAMODB_ENDPOINT: 'localhost:8000' })).toThrow(
+      /DYNAMODB_ENDPOINT/,
+    ));
+  it('aceita DYNAMODB_ENDPOINT http', () =>
+    expect(() => validateEnv({ ...ok, DYNAMODB_ENDPOINT: 'http://localhost:8000' })).not.toThrow());
+  it('rejeita OS_SERVICE_URL invalida', () =>
+    expect(() => validateEnv({ ...ok, OS_SERVICE_URL: 'oficina-app' })).toThrow(/OS_SERVICE_URL/));
+  it('exige OS_SERVICE_URL em producao', () =>
+    expect(() => validateEnv({ JWT_SECRET: 'x'.repeat(40), NODE_ENV: 'production' })).toThrow(
+      /OS_SERVICE_URL/,
+    ));
 });

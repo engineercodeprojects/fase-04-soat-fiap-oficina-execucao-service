@@ -11,8 +11,11 @@ import { InProcessMessagingModule } from '@guilhermeqmaia/oficina-kit/messaging'
 import { validateEnv } from './config/env.validation';
 import { SERVICE_NAME } from './config/service-name';
 import { THROTTLER_LIMIT, THROTTLER_TTL_MS, shouldSkipThrottling } from './config/throttler.config';
-import { PrismaModule } from './prisma/prisma.module';
-import { PrismaHealthIndicator } from './health/prisma-health.indicator';
+import { DynamoDbModule } from './dynamodb/dynamodb.module';
+import { DynamoDbHealthIndicator } from './dynamodb/dynamodb-health.indicator';
+import { ServicoModule } from './servico/servico.module';
+import { ProdutoModule } from './produto/produto.module';
+import { ExecucaoModule } from './execucao/execucao.module';
 
 @Module({
   imports: [
@@ -35,15 +38,17 @@ import { PrismaHealthIndicator } from './health/prisma-health.indicator';
       }),
     }),
     MetricsModule.forRoot({ serviceName: SERVICE_NAME }),
-    HealthModule.forRoot({ imports: [PrismaModule], indicators: [PrismaHealthIndicator] }),
+    HealthModule.forRoot({ imports: [DynamoDbModule], indicators: [DynamoDbHealthIndicator] }),
     InProcessMessagingModule, // eventos de dominio in-process (EventEmitter2); sem broker (RFC-0008)
     ThrottlerModule.forRoot({
       throttlers: [{ ttl: THROTTLER_TTL_MS, limit: THROTTLER_LIMIT }],
       skipIf: (context) => shouldSkipThrottling(process.env, context),
     }),
     // --- este servico ---
-    PrismaModule,
-    // TODO: modulos de dominio (ex.: OrcamentoModule)
+    DynamoDbModule,
+    ServicoModule,
+    ProdutoModule,
+    ExecucaoModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

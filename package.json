@@ -2,7 +2,7 @@
   "name": "oficina-execucao-service",
   "version": "0.1.0",
   "private": true,
-  "description": "Fila de execução, diagnóstico, catálogo e estoque (Execução Service) — microsservico da Oficina Mecanica (Tech Challenge FIAP, Fase 4)",
+  "description": "Execucao de OS: atribuicao de mecanico, diagnostico, catalogo de servicos/produtos e estoque com DynamoDB (Execucao Service) — microsservico da Oficina Mecanica (Tech Challenge FIAP, Fase 4)",
   "license": "MIT",
   "engines": {
     "node": ">=20"
@@ -21,16 +21,15 @@
     "test:integration": "jest --config jest.integration.config.js",
     "test:integration:cov": "jest --config jest.integration.config.js --coverage",
     "test:all:cov": "npm run test:unit:cov && npm run test:integration:cov",
-    "prisma:generate": "prisma generate",
-    "prisma:migrate": "prisma migrate dev",
-    "prisma:deploy": "prisma migrate deploy",
-    "docker:up": "docker compose up -d",
-    "docker:down": "docker compose down -v"
+    "docker:up": "docker compose up -d dynamodb && npm run dynamodb:create-tables",
+    "docker:down": "docker compose down -v",
+    "dynamodb:create-tables": "ts-node src/dynamodb/create-tables.cli.ts",
+    "dynamodb:create-tables:prod": "node dist/dynamodb/create-tables.cli.js"
   },
   "dependencies": {
-    "@guilhermeqmaia/oficina-kit": "^0.2.0",
-    "@aws-sdk/client-sns": "^3.700.0",
-    "@aws-sdk/client-sqs": "^3.700.0",
+    "@aws-sdk/client-dynamodb": "^3.1164.0",
+    "@aws-sdk/lib-dynamodb": "^3.1164.0",
+    "@guilhermeqmaia/oficina-kit": "^0.3.0",
     "@nestjs/common": "^11.1.17",
     "@nestjs/config": "^4.0.3",
     "@nestjs/core": "^11.1.17",
@@ -39,8 +38,7 @@
     "@nestjs/platform-express": "^11.1.17",
     "@nestjs/swagger": "^11.2.7",
     "@nestjs/throttler": "^6.5.0",
-    "@prisma/adapter-pg": "^7.6.0",
-    "@prisma/client": "^7.6.0",
+    "axios": "^1.21.0",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "dotenv": "^17.2.3",
@@ -59,7 +57,6 @@
   "devDependencies": {
     "@eslint/js": "^9.39.0",
     "@nestjs/testing": "^11.1.17",
-    "@testcontainers/postgresql": "^11.9.0",
     "@types/express": "^5.0.6",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.5.0",
@@ -68,7 +65,6 @@
     "eslint": "^9.39.0",
     "jest": "^30.3.0",
     "prettier": "^3.6.2",
-    "prisma": "^7.6.0",
     "supertest": "^7.2.2",
     "testcontainers": "^11.9.0",
     "ts-jest": "^29.4.9",

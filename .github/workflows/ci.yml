@@ -19,13 +19,12 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: npm }
       - run: npm ci
-      - run: npx prisma generate
       - run: npm run format
       - run: npm run lint
       - run: npm run typecheck
       - name: Unitarios + cobertura
         run: npm run test:unit:cov
-      - name: Integracao/e2e (testcontainers)
+      - name: Integracao/e2e (DynamoDB Local via testcontainers)
         run: npm run test:integration
       - run: npm run build
       - uses: actions/upload-artifact@v4
@@ -49,7 +48,7 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-node@v4
         with: { node-version: '20', cache: npm }
-      - run: npm ci && npx prisma generate && npm run test:unit:cov
+      - run: npm ci && npm run test:unit:cov
       - name: Analise
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v5

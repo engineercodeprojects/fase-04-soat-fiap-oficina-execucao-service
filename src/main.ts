@@ -20,11 +20,13 @@ async function bootstrap() {
   if (process.env.NODE_ENV !== 'production') {
     const config = new DocumentBuilder()
       .setTitle('oficina-execucao-service')
-      .setDescription('Fila de execução, diagnóstico, catálogo e estoque (Execução Service)')
+      .setDescription(
+        'Execucao de OS: atribuicao de mecanico, diagnostico, catalogo de servicos/produtos e estoque (DynamoDB)',
+      )
       .setVersion('1.0')
       .addBearerAuth()
       .build();
-    SwaggerModule.setup('api', app, SwaggerModule.createDocument(app, config));
+    SwaggerModule.setup('api/docs', app, SwaggerModule.createDocument(app, config));
   }
 
   app.enableShutdownHooks();
