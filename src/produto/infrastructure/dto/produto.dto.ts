@@ -24,7 +24,7 @@ export class CreateProdutoDto {
   quantidadeEstoque?: number;
 }
 
-/** Saldo nao e editavel pelo cadastro — use `POST /produtos/:id/entradas`. */
+/** Saldo nao e editavel pelo cadastro — use `POST /catalogo/produtos/:id/entradas`. */
 export class UpdateProdutoDto extends PartialType(
   OmitType(CreateProdutoDto, ['quantidadeEstoque'] as const),
 ) {}

@@ -34,7 +34,7 @@ import { RemoverServicoUseCase } from '../application/use-cases/remover-servico.
 @ApiBearerAuth()
 @ApiUnauthorizedResponse({ description: 'Token JWT ausente ou invalido' })
 @ApiForbiddenResponse({ description: 'Role insuficiente' })
-@Controller('servicos')
+@Controller('catalogo/servicos')
 export class ServicoController {
   constructor(
     private readonly criar: CriarServicoUseCase,

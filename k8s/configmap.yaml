@@ -19,8 +19,8 @@ data:
   # Tabelas DynamoDB provisionadas pelo Terraform (repo infra-db): <prefixo>execucoes,
   # <prefixo>servicos, <prefixo>produtos, <prefixo>movimentacoes_estoque.
   DYNAMODB_TABLE_PREFIX: 'oficina-'
-  # OS Service pelo DNS interno do cluster; chamadas entre servicos nao passam pelo API Gateway.
-  # Contrato configuravel por OS_SERVICE_HTTP_METHOD / *_PATH / STATUS_MAP (ver README).
+  # OS Service pelo DNS interno do cluster (RFC-0008): callbacks POST /ordens-servico/{numero}/eventos.
+  # Chamadas entre servicos nao passam pelo API Gateway.
   OS_SERVICE_URL: 'http://oficina-app:3000'
   DD_TRACE_ENABLED: 'true'
   DD_SERVICE: 'oficina-execucao-service'

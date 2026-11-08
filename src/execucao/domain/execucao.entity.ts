@@ -22,37 +22,66 @@ export interface ServicoDaExecucao {
 
 export interface ExecucaoProps {
   osId: string;
-  mecanicoId: string;
+  veiculoId: string;
+  descricaoProblema: string | null;
+  mecanicoId: string | null;
   status: StatusExecucao;
+  diagnostico: string | null;
   servicos: ServicoDaExecucao[];
   estoqueBaixado: boolean;
+  finalizadaEm: string | null;
   createdAt: string;
   updatedAt: string;
   versao: number;
 }
 
-const STATUS_ROLLBACK = [
+/** Item do orcamento no formato do callback `execucao.diagnostico-concluido` (contrato do OS). */
+export interface ItemDiagnostico {
+  tipo: 'SERVICO' | 'PRODUTO';
+  referenciaId: string;
+  nome: string;
+  quantidade: number;
+  precoUnitario: string;
+  servicoId?: string;
+}
+
+export interface ItemDeEstoqueDaExecucao {
+  produtoId: string;
+  servicoId: string;
+  quantidade: number;
+}
+
+const STATUS_CANCELAVEIS = [
+  StatusExecucao.NA_FILA,
   StatusExecucao.ATRIBUIDA,
   StatusExecucao.EM_DIAGNOSTICO,
   StatusExecucao.AGUARDANDO_APROVACAO,
 ];
 
 /**
- * Agregado Execucao (1 por OS): mecanico responsavel, servicos+pecas do
+ * Agregado Execucao (1 por OS): fila, mecanico responsavel, servicos+pecas do
  * diagnostico e o ciclo de vida da execucao. Toda mudanca de status passa por
  * `transitarPara`, que aplica a maquina de estados.
  */
 export class Execucao {
   private constructor(private props: ExecucaoProps) {}
 
-  static atribuir(osId: string, mecanicoId: string, agora: Date = new Date()): Execucao {
+  /** `execucao.enfileirar` do OS Service: a OS entra na fila, ainda sem mecanico. */
+  static enfileirar(
+    input: { osId: string; veiculoId: string; descricaoProblema?: string },
+    agora: Date = new Date(),
+  ): Execucao {
     const iso = agora.toISOString();
     return new Execucao({
-      osId: exigirTexto(osId, 'osId'),
-      mecanicoId: exigirTexto(mecanicoId, 'mecanicoId'),
-      status: StatusExecucao.ATRIBUIDA,
+      osId: exigirTexto(input.osId, 'numeroOS'),
+      veiculoId: exigirTexto(input.veiculoId, 'veiculoId'),
+      descricaoProblema: input.descricaoProblema?.trim() || null,
+      mecanicoId: null,
+      status: StatusExecucao.NA_FILA,
+      diagnostico: null,
       servicos: [],
       estoqueBaixado: false,
+      finalizadaEm: null,
       createdAt: iso,
       updatedAt: iso,
       versao: 0,
@@ -63,23 +92,30 @@ export class Execucao {
     return new Execucao(structuredClone(props));
   }
 
-  /** Troca o mecanico enquanto o diagnostico nao foi fechado. */
-  reatribuirMecanico(mecanicoId: string, agora: Date = new Date()): void {
-    if (!emDiagnostico(this.props.status)) {
+  /** Atribui (NA_FILA -> ATRIBUIDA) ou troca o mecanico enquanto o diagnostico esta aberto. */
+  atribuirMecanico(mecanicoId: string, agora: Date = new Date()): void {
+    const id = exigirTexto(mecanicoId, 'mecanicoId');
+    if (this.props.status === StatusExecucao.NA_FILA) {
+      this.transitarPara(StatusExecucao.ATRIBUIDA, agora);
+    } else if (!emDiagnostico(this.props.status)) {
       throw new ConflitoDeNegocioError(
-        `Nao e possivel reatribuir mecanico com a execucao em ${this.props.status}`,
+        `Nao e possivel atribuir mecanico com a execucao em ${this.props.status}`,
       );
     }
-    this.props.mecanicoId = exigirTexto(mecanicoId, 'mecanicoId');
+    this.props.mecanicoId = id;
     this.tocar(agora);
   }
 
+  /** Vincula servico do catalogo; o primeiro vinculo inicia o diagnostico (ATRIBUIDA -> EM_DIAGNOSTICO). */
   adicionarServico(
     servico: Omit<ServicoDaExecucao, 'produtos'>,
     agora: Date = new Date(),
   ): boolean {
     this.exigirDiagnosticoAberto();
     if (this.props.servicos.some((s) => s.servicoId === servico.servicoId)) return false;
+    if (this.props.status === StatusExecucao.ATRIBUIDA) {
+      this.transitarPara(StatusExecucao.EM_DIAGNOSTICO, agora);
+    }
     this.props.servicos.push({ ...servico, produtos: [] });
     this.tocar(agora);
     return true;
@@ -103,22 +139,39 @@ export class Execucao {
     this.tocar(agora);
   }
 
-  /** Fecha o diagnostico (-> AGUARDANDO_APROVACAO). Devolve as pecas a baixar. */
-  fecharDiagnostico(
-    agora: Date = new Date(),
-  ): { produtoId: string; servicoId: string; quantidade: number }[] {
+  /** Conclui o diagnostico (-> AGUARDANDO_APROVACAO). Devolve as pecas a baixar. */
+  concluirDiagnostico(diagnostico: string, agora: Date = new Date()): ItemDeEstoqueDaExecucao[] {
     if (!this.props.servicos.length) {
       throw new DadoInvalidoError('Diagnostico sem servicos: vincule ao menos um servico a OS');
     }
+    const texto = exigirTexto(diagnostico, 'diagnostico');
     this.transitarPara(StatusExecucao.AGUARDANDO_APROVACAO, agora);
+    this.props.diagnostico = texto;
     this.props.estoqueBaixado = true;
     return this.itensDeEstoque();
   }
 
-  /** Reprovacao do orcamento. Idempotente: retorna false se ja estava CANCELADA. */
+  /** `execucao.iniciar` (orcamento aprovado). Idempotente: false se ja estava em execucao/executada. */
+  iniciarExecucao(agora: Date = new Date()): boolean {
+    if (
+      this.props.status === StatusExecucao.EM_EXECUCAO ||
+      this.props.status === StatusExecucao.EXECUTADA
+    ) {
+      return false;
+    }
+    this.transitarPara(StatusExecucao.EM_EXECUCAO, agora);
+    return true;
+  }
+
+  finalizar(agora: Date = new Date()): void {
+    this.transitarPara(StatusExecucao.EXECUTADA, agora);
+    this.props.finalizadaEm = agora.toISOString();
+  }
+
+  /** `execucao.liberar-reservas` (OS cancelada/orcamento reprovado). Idempotente. */
   cancelar(agora: Date = new Date()): boolean {
     if (this.props.status === StatusExecucao.CANCELADA) return false;
-    if (!STATUS_ROLLBACK.includes(this.props.status)) {
+    if (!STATUS_CANCELAVEIS.includes(this.props.status)) {
       throw new TransicaoDeStatusInvalidaError(this.props.status, StatusExecucao.CANCELADA);
     }
     this.transitarPara(StatusExecucao.CANCELADA, agora);
@@ -134,7 +187,7 @@ export class Execucao {
     this.tocar(agora);
   }
 
-  itensDeEstoque(): { produtoId: string; servicoId: string; quantidade: number }[] {
+  itensDeEstoque(): ItemDeEstoqueDaExecucao[] {
     return this.props.servicos.flatMap((s) =>
       s.produtos.map((p) => ({
         produtoId: p.produtoId,
@@ -142,6 +195,27 @@ export class Execucao {
         quantidade: p.quantidade,
       })),
     );
+  }
+
+  /** Itens com precos congelados no formato do OS Service (servicos e, sob cada um, as pecas). */
+  itensDoDiagnostico(): ItemDiagnostico[] {
+    return this.props.servicos.flatMap((s) => [
+      {
+        tipo: 'SERVICO' as const,
+        referenciaId: s.servicoId,
+        nome: s.nome,
+        quantidade: 1,
+        precoUnitario: s.preco.toFixed(2),
+      },
+      ...s.produtos.map((p) => ({
+        tipo: 'PRODUTO' as const,
+        referenciaId: p.produtoId,
+        nome: p.nome,
+        quantidade: p.quantidade,
+        precoUnitario: p.precoUnitario.toFixed(2),
+        servicoId: s.servicoId,
+      })),
+    ]);
   }
 
   /** Orcamento consolidado: mao de obra + pecas. */
@@ -157,11 +231,23 @@ export class Execucao {
   get osId() {
     return this.props.osId;
   }
+  get veiculoId() {
+    return this.props.veiculoId;
+  }
   get mecanicoId() {
     return this.props.mecanicoId;
   }
   get status() {
     return this.props.status;
+  }
+  get diagnostico() {
+    return this.props.diagnostico;
+  }
+  get finalizadaEm() {
+    return this.props.finalizadaEm;
+  }
+  get createdAt() {
+    return this.props.createdAt;
   }
   get versao() {
     return this.props.versao;

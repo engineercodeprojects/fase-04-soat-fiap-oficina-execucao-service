@@ -1,10 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { UseCase } from '@guilhermeqmaia/oficina-kit/core';
-import { AuthenticatedUser } from '@guilhermeqmaia/oficina-kit/auth';
+import { AuthenticatedUser, Role } from '@guilhermeqmaia/oficina-kit/auth';
+import { NotOwnedByUserError } from '@guilhermeqmaia/oficina-kit/core';
 import { Execucao } from '../../domain/execucao.entity';
 import { EXECUCAO_REPOSITORY, ExecucaoRepository } from '../../domain/execucao.repository';
-import { OS_SERVICE_GATEWAY, OsServiceGateway } from '../ports/os-service.gateway';
-import { persistirEPropagar } from '../execucao.helpers';
+import { carregarExecucao } from '../execucao.helpers';
 
 export interface AtribuirMecanicoInput {
   osId: string;
@@ -13,31 +13,25 @@ export interface AtribuirMecanicoInput {
 }
 
 /**
- * Cria a execucao da OS com o mecanico (ou reatribui, durante o diagnostico) e
- * propaga a atribuicao ao OS Service. Se o OS Service recusar/estiver fora, a
- * gravacao local e desfeita. Repetir com o mesmo mecanico e idempotente.
+ * Tira a OS da fila atribuindo o mecanico (ADMIN atribui qualquer um; MECANICO
+ * so a si mesmo) ou reatribui durante o diagnostico. Mesmo mecanico = idempotente.
+ * O OS Service recebe o mecanicoId no callback do diagnostico.
  */
 @Injectable()
 export class AtribuirMecanicoUseCase implements UseCase<AtribuirMecanicoInput, Execucao> {
-  constructor(
-    @Inject(EXECUCAO_REPOSITORY) private readonly repo: ExecucaoRepository,
-    @Inject(OS_SERVICE_GATEWAY) private readonly os: OsServiceGateway,
-  ) {}
+  constructor(@Inject(EXECUCAO_REPOSITORY) private readonly repo: ExecucaoRepository) {}
 
-  async execute({ osId, mecanicoId }: AtribuirMecanicoInput): Promise<Execucao> {
-    const existente = await this.repo.buscarPorOsId(osId);
-    const execucao = existente ?? Execucao.atribuir(osId, mecanicoId);
-    const anterior = execucao.toJSON();
-    if (existente) {
-      if (existente.mecanicoId === mecanicoId) {
-        await this.os.atribuirMecanico(osId, mecanicoId);
-        return existente;
-      }
-      existente.reatribuirMecanico(mecanicoId);
+  async execute({ osId, mecanicoId, ator }: AtribuirMecanicoInput): Promise<Execucao> {
+    if (ator?.role === Role.MECANICO && ator.id !== mecanicoId) {
+      throw new NotOwnedByUserError('Execucao', osId);
     }
-    await persistirEPropagar(this.repo, execucao, anterior, () =>
-      this.os.atribuirMecanico(osId, execucao.mecanicoId),
-    );
+    const execucao = await carregarExecucao(this.repo, osId);
+    if (execucao.mecanicoId === mecanicoId) return execucao;
+    if (ator?.role === Role.MECANICO && execucao.mecanicoId) {
+      throw new NotOwnedByUserError('Execucao', osId);
+    }
+    execucao.atribuirMecanico(mecanicoId);
+    await this.repo.salvar(execucao);
     return execucao;
   }
 }

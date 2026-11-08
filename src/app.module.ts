@@ -8,6 +8,7 @@ import { CorrelationIdMiddleware, LoggerModule } from '@guilhermeqmaia/oficina-k
 import { MetricsModule } from '@guilhermeqmaia/oficina-kit/metrics';
 import { HealthModule } from '@guilhermeqmaia/oficina-kit/health';
 import { InProcessMessagingModule } from '@guilhermeqmaia/oficina-kit/messaging';
+import { HttpInternoModule } from '@guilhermeqmaia/oficina-kit/http';
 import { validateEnv } from './config/env.validation';
 import { SERVICE_NAME } from './config/service-name';
 import { THROTTLER_LIMIT, THROTTLER_TTL_MS, shouldSkipThrottling } from './config/throttler.config';
@@ -39,6 +40,18 @@ import { ExecucaoModule } from './execucao/execucao.module';
     }),
     MetricsModule.forRoot({ serviceName: SERVICE_NAME }),
     HealthModule.forRoot({ imports: [DynamoDbModule], indicators: [DynamoDbHealthIndicator] }),
+    // Callbacks HTTP para o OS Service (RFC-0008): JWT de servico, retry, correlacao.
+    HttpInternoModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (c: ConfigService) => ({
+        servico: 'execucao-service',
+        jwtSecret: c.getOrThrow<string>('JWT_SECRET'),
+        issuer: c.get<string>('JWT_ISSUER'),
+        ...(c.get('OS_SERVICE_TENTATIVAS')
+          ? { tentativas: Number(c.get('OS_SERVICE_TENTATIVAS')) }
+          : {}),
+      }),
+    }),
     InProcessMessagingModule, // eventos de dominio in-process (EventEmitter2); sem broker (RFC-0008)
     ThrottlerModule.forRoot({
       throttlers: [{ ttl: THROTTLER_TTL_MS, limit: THROTTLER_LIMIT }],

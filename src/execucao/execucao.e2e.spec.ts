@@ -14,23 +14,25 @@ const mecanico = `Bearer ${mintToken({ sub: 'mec-1', role: Role.MECANICO })}`;
 const outroMecanico = `Bearer ${mintToken({ sub: 'mec-2', role: Role.MECANICO })}`;
 const osService = `Bearer ${mintServiceToken({ servico: 'os-service' })}`;
 
-/** Fluxos criticos contra DynamoDB Local real + OS Service fake (HTTP). */
+/**
+ * Fluxos criticos do contrato RFC-0008 contra DynamoDB Local real e um OS
+ * Service fake (recebe os callbacks POST /ordens-servico/{numero}/eventos).
+ */
 describe('Execucao (e2e: DynamoDB Local + mock do OS Service)', () => {
   let app: INestApplication;
   const os = new ServidorHttpFake();
-  let http: ReturnType<typeof request>;
+  const api = () => request(app.getHttpServer());
 
   beforeAll(async () => {
     await os.iniciar();
     process.env.OS_SERVICE_URL = os.url;
-    process.env.OS_SERVICE_RETRIES = '0';
+    process.env.OS_SERVICE_TENTATIVAS = '1';
     await iniciarDynamoDbDeTeste('e2e-exec-');
     const { AppModule } = await import('../app.module');
     const ref = await Test.createTestingModule({ imports: [AppModule] }).compile();
     app = ref.createNestApplication();
     app.useGlobalPipes(new ValidationPipe({ whitelist: true, transform: true }));
     await app.init();
-    http = request(app.getHttpServer());
   });
   afterAll(async () => {
     await app?.close();
@@ -40,97 +42,100 @@ describe('Execucao (e2e: DynamoDB Local + mock do OS Service)', () => {
   beforeEach(() => os.limpar());
 
   async function catalogo() {
-    const s1 = await request(app.getHttpServer())
-      .post('/servicos')
+    const s1 = await api()
+      .post('/catalogo/servicos')
       .set('Authorization', admin)
       .send({ nome: 'Troca de oleo', precoBase: 100 })
       .expect(201);
-    const s2 = await request(app.getHttpServer())
-      .post('/servicos')
+    const s2 = await api()
+      .post('/catalogo/servicos')
       .set('Authorization', admin)
       .send({ nome: 'Revisao', precoBase: 50 })
       .expect(201);
-    const p1 = await request(app.getHttpServer())
-      .post('/produtos')
+    const p1 = await api()
+      .post('/catalogo/produtos')
       .set('Authorization', estoquista)
-      .send({ nome: 'Oleo 5W30', sku: `OL-${Date.now()}`, preco: 30, quantidadeEstoque: 5 })
+      .send({ nome: 'Oleo 5W30', sku: `OL-${Math.random()}`, preco: 30, quantidadeEstoque: 5 })
       .expect(201);
     return { s1: s1.body.servicoId, s2: s2.body.servicoId, p1: p1.body.produtoId };
   }
 
-  async function diagnostico(osId: string, qtdS1: number, qtdS2: number) {
+  async function diagnostico(numeroOS: string, qtdS1: number, qtdS2: number) {
     const c = await catalogo();
-    const srv = app.getHttpServer();
-    await request(srv)
-      .post(`/execucoes/${osId}/atribuir-mecanico`)
-      .set('Authorization', admin)
-      .send({ mecanicoId: 'mec-1' })
+    await api()
+      .post('/execucao/ordens')
+      .set('Authorization', osService)
+      .send({ numeroOS, veiculoId: `v-${numeroOS}`, descricaoProblema: 'Barulho' })
       .expect(201);
-    await request(srv)
-      .post(`/execucoes/${osId}/servicos`)
+    await api()
+      .post(`/execucao/ordens/${numeroOS}/atribuir-mecanico`)
+      .set('Authorization', mecanico)
+      .send({ mecanicoId: 'mec-1' })
+      .expect(200);
+    await api()
+      .post(`/execucao/ordens/${numeroOS}/servicos`)
       .set('Authorization', mecanico)
       .send({ servicoIds: [c.s1, c.s2] })
       .expect(201);
-    await request(srv)
-      .post(`/execucoes/${osId}/servicos/${c.s1}/produtos`)
-      .set('Authorization', mecanico)
-      .send({ produtos: [{ produtoId: c.p1, quantidade: qtdS1 }] })
-      .expect(201);
-    await request(srv)
-      .post(`/execucoes/${osId}/servicos/${c.s2}/produtos`)
-      .set('Authorization', mecanico)
-      .send({ produtos: [{ produtoId: c.p1, quantidade: qtdS2 }] })
-      .expect(201);
+    for (const [servicoId, quantidade] of [
+      [c.s1, qtdS1],
+      [c.s2, qtdS2],
+    ]) {
+      await api()
+        .post(`/execucao/ordens/${numeroOS}/servicos/${servicoId}/produtos`)
+        .set('Authorization', mecanico)
+        .send({ produtos: [{ produtoId: c.p1, quantidade }] })
+        .expect(201);
+    }
     return c;
   }
 
   const saldo = async (produtoId: string) =>
-    (
-      await request(app.getHttpServer())
-        .get(`/produtos/${produtoId}`)
-        .set('Authorization', admin)
-        .expect(200)
-    ).body.quantidadeEstoque;
+    (await api().get(`/catalogo/produtos/${produtoId}`).set('Authorization', admin).expect(200))
+      .body.quantidadeEstoque;
 
-  it('roles por rota: 401 sem token, 403 com role errada, swagger publico em dev', async () => {
-    await http.get('/servicos').expect(401);
-    await request(app.getHttpServer())
-      .post('/servicos')
+  it('roles por rota: 401 sem token, 403 com role errada, 400 validacao', async () => {
+    await api().get('/catalogo/servicos').expect(401);
+    await api()
+      .post('/catalogo/servicos')
       .set('Authorization', mecanico)
       .send({ nome: 'x', precoBase: 1 })
       .expect(403);
-    await request(app.getHttpServer())
-      .post('/produtos')
+    await api()
+      .post('/catalogo/produtos')
       .set('Authorization', mecanico)
       .send({ nome: 'x', sku: 'x', preco: 1 })
       .expect(403);
-    await request(app.getHttpServer())
-      .post('/execucoes/OS-R/rollback')
+    await api()
+      .post('/execucao/ordens')
       .set('Authorization', mecanico)
+      .send({ numeroOS: 'X', veiculoId: 'v' })
       .expect(403);
-    await request(app.getHttpServer())
-      .post('/servicos')
+    await api().delete('/execucao/ordens/OS-R').set('Authorization', mecanico).expect(403);
+    await api().post('/execucao/ordens/OS-R/iniciar').set('Authorization', mecanico).expect(403);
+    await api()
+      .post('/catalogo/servicos')
       .set('Authorization', admin)
       .send({ nome: '', precoBase: -1 })
       .expect(400);
   });
 
-  it('fluxo feliz: atribuicao -> diagnostico -> baixa -> execucao -> conclusao', async () => {
+  it('fluxo feliz: enfileirar -> atribuir -> diagnostico (baixa + callback) -> iniciar -> finalizar', async () => {
     const c = await diagnostico('OS-100', 2, 1);
-    const srv = app.getHttpServer();
-    await request(srv).get('/execucoes/OS-100').set('Authorization', outroMecanico).expect(403);
+    await api().get('/execucao/ordens/OS-100').set('Authorization', outroMecanico).expect(403);
 
-    const fechado = await request(srv)
-      .post('/execucoes/OS-100/fechar-diagnostico')
+    const res = await api()
+      .post('/execucao/ordens/OS-100/diagnostico')
       .set('Authorization', mecanico)
+      .send({ diagnostico: 'Oleo vencido' })
       .expect(200);
-    expect(fechado.body).toMatchObject({
+    expect(res.body).toMatchObject({
       status: 'AGUARDANDO_APROVACAO',
       valorTotal: 100 + 50 + 3 * 30,
     });
     expect(await saldo(c.p1)).toBe(2);
-    const movs = await request(srv)
-      .get('/execucoes/OS-100/movimentacoes')
+    const movs = await api()
+      .get('/execucao/ordens/OS-100/movimentacoes')
       .set('Authorization', admin)
       .expect(200);
     expect(
@@ -140,149 +145,213 @@ describe('Execucao (e2e: DynamoDB Local + mock do OS Service)', () => {
       ['BAIXA', 2],
     ]);
 
-    await request(srv)
-      .post('/execucoes/OS-100/executar')
-      .set('Authorization', mecanico)
+    const iniciada = await api()
+      .post('/execucao/ordens/OS-100/iniciar')
+      .set('Authorization', osService)
       .expect(200);
-    const fim = await request(srv)
-      .post('/execucoes/OS-100/concluir')
+    expect(iniciada.body).toEqual({ numeroOS: 'OS-100', status: 'EM_EXECUCAO' });
+    await api().post('/execucao/ordens/OS-100/iniciar').set('Authorization', osService).expect(200);
+    const fim = await api()
+      .post('/execucao/ordens/OS-100/finalizar')
       .set('Authorization', mecanico)
       .expect(200);
     expect(fim.body.status).toBe('EXECUTADA');
 
-    expect(os.recebidas.map((r) => [r.method, r.url, r.body])).toEqual([
-      ['PATCH', '/os/OS-100/mecanico', { mecanicoId: 'mec-1' }],
-      ['PATCH', '/os/OS-100/status', { status: 'AGUARDANDO_APROVACAO' }],
-      ['PATCH', '/os/OS-100/status', { status: 'EM_EXECUCAO' }],
-      ['PATCH', '/os/OS-100/status', { status: 'FINALIZADA' }],
+    expect(os.recebidas.map((r) => [r.method, r.url])).toEqual([
+      ['POST', '/ordens-servico/OS-100/eventos'],
+      ['POST', '/ordens-servico/OS-100/eventos'],
     ]);
+    const [diag, finalizada] = os.recebidas.map(
+      (r) => r.body as { type: string; producer: string; data: Record<string, unknown> },
+    );
+    expect(diag).toMatchObject({
+      type: 'execucao.diagnostico-concluido',
+      producer: 'execucao-service',
+      data: { numeroOS: 'OS-100', mecanicoId: 'mec-1', diagnostico: 'Oleo vencido' },
+    });
+    expect(diag.data.itens).toEqual([
+      {
+        tipo: 'SERVICO',
+        referenciaId: c.s1,
+        nome: 'Troca de oleo',
+        quantidade: 1,
+        precoUnitario: '100.00',
+      },
+      {
+        tipo: 'PRODUTO',
+        referenciaId: c.p1,
+        nome: 'Oleo 5W30',
+        quantidade: 2,
+        precoUnitario: '30.00',
+        servicoId: c.s1,
+      },
+      {
+        tipo: 'SERVICO',
+        referenciaId: c.s2,
+        nome: 'Revisao',
+        quantidade: 1,
+        precoUnitario: '50.00',
+      },
+      {
+        tipo: 'PRODUTO',
+        referenciaId: c.p1,
+        nome: 'Oleo 5W30',
+        quantidade: 1,
+        precoUnitario: '30.00',
+        servicoId: c.s2,
+      },
+    ]);
+    expect(finalizada).toMatchObject({ type: 'execucao.finalizada', data: { numeroOS: 'OS-100' } });
     expect(os.recebidas[0].headers.authorization).toMatch(/^Bearer /);
+    expect(os.recebidas[0].headers['x-correlation-id']).toBe('OS-100');
   });
 
-  it('estoque insuficiente: 409, nada baixado (transacao com ConditionExpression)', async () => {
-    const c = await diagnostico('OS-200', 4, 2);
-    const res = await request(app.getHttpServer())
-      .post('/execucoes/OS-200/fechar-diagnostico')
-      .set('Authorization', mecanico)
+  it('enfileirar: idempotente por numeroOS e 409 { motivo } para veiculo ja em execucao', async () => {
+    const corpo = { numeroOS: 'OS-150', veiculoId: 'v-dup' };
+    const r1 = await api()
+      .post('/execucao/ordens')
+      .set('Authorization', osService)
+      .send(corpo)
+      .expect(201);
+    expect(r1.body).toEqual({ numeroOS: 'OS-150', posicaoFila: expect.any(Number) });
+    await api().post('/execucao/ordens').set('Authorization', osService).send(corpo).expect(201);
+    const r = await api()
+      .post('/execucao/ordens')
+      .set('Authorization', osService)
+      .send({ numeroOS: 'OS-151', veiculoId: 'v-dup' })
       .expect(409);
-    expect(res.body.message).toContain('Estoque insuficiente');
-    expect(await saldo(c.p1)).toBe(5);
-    const exec = await request(app.getHttpServer())
-      .get('/execucoes/OS-200')
-      .set('Authorization', admin);
-    expect(exec.body.status).toBe('ATRIBUIDA');
+    expect(r.body.motivo).toContain('ja esta em execucao');
   });
 
-  it('rollback (orcamento reprovado) devolve as pecas e e idempotente', async () => {
-    const c = await diagnostico('OS-300', 3, 2);
-    const srv = app.getHttpServer();
-    await request(srv)
-      .post('/execucoes/OS-300/fechar-diagnostico')
+  it('estoque insuficiente: 409 { motivo }, nada baixado, nenhum callback', async () => {
+    const c = await diagnostico('OS-200', 4, 2);
+    const res = await api()
+      .post('/execucao/ordens/OS-200/diagnostico')
       .set('Authorization', mecanico)
+      .send({ diagnostico: 'x' })
+      .expect(409);
+    expect(res.body.motivo).toContain('Estoque insuficiente');
+    expect(await saldo(c.p1)).toBe(5);
+    expect(os.recebidas).toEqual([]);
+    const exec = await api().get('/execucao/ordens/OS-200').set('Authorization', admin);
+    expect(exec.body.status).toBe('EM_DIAGNOSTICO');
+  });
+
+  it('DELETE (liberar-reservas) devolve as pecas e e idempotente', async () => {
+    const c = await diagnostico('OS-300', 3, 2);
+    await api()
+      .post('/execucao/ordens/OS-300/diagnostico')
+      .set('Authorization', mecanico)
+      .send({ diagnostico: 'x' })
       .expect(200);
     expect(await saldo(c.p1)).toBe(0);
-    const r = await request(srv)
-      .post('/execucoes/OS-300/rollback')
+    const r = await api()
+      .delete('/execucao/ordens/OS-300')
       .set('Authorization', osService)
+      .send({ motivo: 'Orcamento reprovado' })
       .expect(200);
-    expect(r.body.status).toBe('CANCELADA');
+    expect(r.body).toMatchObject({ numeroOS: 'OS-300', status: 'CANCELADA' });
     expect(r.body.devolucoes).toHaveLength(2);
     expect(await saldo(c.p1)).toBe(5);
-    const r2 = await request(srv)
-      .post('/execucoes/OS-300/rollback')
+    const r2 = await api()
+      .delete('/execucao/ordens/OS-300')
       .set('Authorization', osService)
       .expect(200);
     expect(r2.body.devolucoes).toEqual([]);
     expect(await saldo(c.p1)).toBe(5);
-    await request(srv)
-      .post('/execucoes/OS-300/executar')
-      .set('Authorization', mecanico)
+    const semExecucao = await api()
+      .delete('/execucao/ordens/OS-NAO-EXISTE')
+      .set('Authorization', osService)
+      .expect(200);
+    expect(semExecucao.body).toEqual({ numeroOS: 'OS-NAO-EXISTE', status: null, devolucoes: [] });
+    const recusa = await api()
+      .post('/execucao/ordens/OS-300/iniciar')
+      .set('Authorization', osService)
       .expect(409);
+    expect(recusa.body.motivo).toContain('CANCELADA');
   });
 
-  it('OS Service fora do ar: 502 e a baixa e devolvida', async () => {
+  it('OS Service fora do ar: 502 e a baixa e devolvida; recusa do OS = 409', async () => {
     const c = await diagnostico('OS-400', 1, 1);
     os.responder({ status: 503 });
-    await request(app.getHttpServer())
-      .post('/execucoes/OS-400/fechar-diagnostico')
+    await api()
+      .post('/execucao/ordens/OS-400/diagnostico')
       .set('Authorization', mecanico)
+      .send({ diagnostico: 'x' })
       .expect(502);
     expect(await saldo(c.p1)).toBe(5);
     os.responder({ status: 409, body: { motivo: 'OS cancelada' } });
-    const res = await request(app.getHttpServer())
-      .post('/execucoes/OS-400/fechar-diagnostico')
+    const res = await api()
+      .post('/execucao/ordens/OS-400/diagnostico')
       .set('Authorization', mecanico)
+      .send({ diagnostico: 'x' })
       .expect(409);
-    expect(res.body.message).toContain('OS cancelada');
+    expect(res.body.motivo).toContain('OS cancelada');
     expect(await saldo(c.p1)).toBe(5);
   });
 
   it('CRUD de produtos com entrada de estoque auditada; SKU duplicado = 409', async () => {
-    const srv = app.getHttpServer();
-    const p = await request(srv)
-      .post('/produtos')
+    const p = await api()
+      .post('/catalogo/produtos')
       .set('Authorization', estoquista)
       .send({ nome: 'Pastilha', sku: 'pst-e2e', preco: 80 })
       .expect(201);
-    await request(srv)
-      .post('/produtos')
+    const id = p.body.produtoId;
+    await api()
+      .post('/catalogo/produtos')
       .set('Authorization', estoquista)
       .send({ nome: 'Outra', sku: 'PST-E2E', preco: 1 })
       .expect(409);
-    await request(srv)
-      .post(`/produtos/${p.body.produtoId}/entradas`)
+    await api()
+      .post(`/catalogo/produtos/${id}/entradas`)
       .set('Authorization', estoquista)
       .send({ quantidade: 4 })
       .expect(201);
-    const upd = await request(srv)
-      .patch(`/produtos/${p.body.produtoId}`)
+    const upd = await api()
+      .patch(`/catalogo/produtos/${id}`)
       .set('Authorization', estoquista)
       .send({ preco: 90 })
       .expect(200);
     expect(upd.body).toMatchObject({ preco: 90, quantidadeEstoque: 4 });
-    const movs = await request(srv)
-      .get(`/produtos/${p.body.produtoId}/movimentacoes`)
+    const movs = await api()
+      .get(`/catalogo/produtos/${id}/movimentacoes`)
       .set('Authorization', estoquista);
     expect(movs.body).toHaveLength(1);
     expect(
-      (await request(srv).get('/produtos').set('Authorization', mecanico)).body.length,
+      (await api().get('/catalogo/produtos').set('Authorization', mecanico)).body.length,
     ).toBeGreaterThan(0);
-    await request(srv)
-      .delete(`/produtos/${p.body.produtoId}`)
-      .set('Authorization', admin)
-      .expect(204);
-    await request(srv).get(`/produtos/${p.body.produtoId}`).set('Authorization', admin).expect(404);
+    await api().delete(`/catalogo/produtos/${id}`).set('Authorization', admin).expect(204);
+    await api().get(`/catalogo/produtos/${id}`).set('Authorization', admin).expect(404);
   });
 
-  it('CRUD de servicos e listagem da fila', async () => {
-    const srv = app.getHttpServer();
-    const s = await request(srv)
-      .post('/servicos')
+  it('CRUD de servicos e fila do mecanico', async () => {
+    const s = await api()
+      .post('/catalogo/servicos')
       .set('Authorization', admin)
       .send({ nome: 'Freios', precoBase: 70 });
-    await request(srv)
-      .patch(`/servicos/${s.body.servicoId}`)
+    await api()
+      .patch(`/catalogo/servicos/${s.body.servicoId}`)
       .set('Authorization', admin)
       .send({ precoBase: 75 })
       .expect(200);
     expect(
-      (await request(srv).get(`/servicos/${s.body.servicoId}`).set('Authorization', mecanico)).body
-        .precoBase,
+      (await api().get(`/catalogo/servicos/${s.body.servicoId}`).set('Authorization', mecanico))
+        .body.precoBase,
     ).toBe(75);
-    expect((await request(srv).get('/servicos').set('Authorization', mecanico)).status).toBe(200);
-    await request(srv)
-      .delete(`/servicos/${s.body.servicoId}`)
+    expect((await api().get('/catalogo/servicos').set('Authorization', mecanico)).status).toBe(200);
+    await api()
+      .delete(`/catalogo/servicos/${s.body.servicoId}`)
       .set('Authorization', admin)
       .expect(204);
-    const fila = await request(srv)
-      .get('/execucoes?status=EXECUTADA')
-      .set('Authorization', mecanico)
+    const fila = await api()
+      .get('/execucao/ordens')
+      .set('Authorization', outroMecanico)
       .expect(200);
-    expect(fila.body.every((e: { mecanicoId: string }) => e.mecanicoId === 'mec-1')).toBe(true);
-    await request(srv)
-      .patch('/execucoes/OS-100/status')
-      .set('Authorization', admin)
-      .send({ status: 'CANCELADA' })
-      .expect(400);
+    expect(
+      fila.body.every(
+        (e: { mecanicoId: string | null; status: string }) =>
+          e.mecanicoId === 'mec-2' || e.status === 'NA_FILA',
+      ),
+    ).toBe(true);
   });
 });

@@ -1,15 +1,24 @@
-import { StatusExecucao } from '../../domain/status-execucao';
+import { ItemDiagnostico } from '../../domain/execucao.entity';
 
 export const OS_SERVICE_GATEWAY = Symbol('OS_SERVICE_GATEWAY');
 
+export interface DiagnosticoConcluido {
+  numeroOS: string;
+  mecanicoId: string;
+  diagnostico: string;
+  itens: ItemDiagnostico[];
+}
+
 /**
- * Porta para o OS Service (dono da OS e do status "oficial"). A Execucao
- * propaga para ele a atribuicao de mecanico e as mudancas de status. O
- * adapter HTTP e configuravel (paths, metodo, mapa de status) — ver README.
+ * Callbacks para o OS Service (orquestrador da saga, RFC-0008):
+ * `POST /ordens-servico/{numeroOS}/eventos` com envelope `{ id, type, version,
+ * occurredAt, producer, data }` — ver docs/contratos/http-interno.md no os-service.
  */
 export interface OsServiceGateway {
-  atribuirMecanico(osId: string, mecanicoId: string): Promise<void>;
-  atualizarStatus(osId: string, status: StatusExecucao): Promise<void>;
+  /** `execucao.diagnostico-concluido` — OS gera o orcamento e vai para AGUARDANDO_APROVACAO. */
+  diagnosticoConcluido(evento: DiagnosticoConcluido): Promise<void>;
+  /** `execucao.finalizada` — OS vai para AGUARDANDO_PAGAMENTO e cobra. */
+  execucaoFinalizada(evento: { numeroOS: string; finalizadaEm: string }): Promise<void>;
 }
 
 /** OS Service fora do ar/timeout/5xx (apos retries) — a operacao local e desfeita. */

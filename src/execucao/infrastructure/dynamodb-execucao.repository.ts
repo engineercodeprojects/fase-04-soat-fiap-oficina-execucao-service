@@ -66,6 +66,10 @@ export class DynamoDbExecucaoRepository implements ExecucaoRepository {
       condicoes.push('mecanicoId = :mecanicoId');
       valores[':mecanicoId'] = filtro.mecanicoId;
     }
+    if (filtro.veiculoId) {
+      condicoes.push('veiculoId = :veiculoId');
+      valores[':veiculoId'] = filtro.veiculoId;
+    }
     if (filtro.status) {
       condicoes.push('#status = :status'); // `status` e palavra reservada
       nomes['#status'] = 'status';

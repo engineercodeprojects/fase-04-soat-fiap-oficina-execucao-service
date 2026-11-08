@@ -14,11 +14,11 @@ Microsserviço **Execução** da Oficina Mecânica (Tech Challenge FIAP, Fase 4)
 ```
 src/
 ├── dynamodb/      cliente DynamoDB, nomes de tabelas (env), health, definição/criação de tabelas (dev/teste)
-├── servico/       catálogo de serviços (CRUD /servicos)
-├── produto/       catálogo de produtos + estoque (CRUD /produtos, entradas, movimentações,
+├── servico/       catálogo de serviços (CRUD /catalogo/servicos)
+├── produto/       catálogo de produtos + estoque (CRUD /catalogo/produtos, entradas, movimentações,
 │                  EstoqueService: baixa/devolução com TransactWriteItems)
-├── execucao/      agregado Execução (1 por OS), máquina de estados, rotas /execucoes,
-│                  OsServiceClient (porta OsServiceGateway + adapter HTTP axios)
+├── execucao/      agregado Execução (1 por OS), máquina de estados, rotas /execucao/ordens,
+│                  OsServiceClient (porta OsServiceGateway + callbacks via ClienteHttpInterno do kit)
 └── shared/        erros de domínio e validações comuns; teste de arquitetura (regra de dependência)
 ```
 
@@ -28,18 +28,18 @@ src/
 | `application`    | Casos de uso, `EstoqueService`, porta `OsServiceGateway`                               | `domain`, `@nestjs/common`                          |
 | `infrastructure` | Controllers + DTOs (class-validator/Swagger), repositórios DynamoDB, `OsServiceClient` | tudo                                                |
 
-`src/shared/architecture.spec.ts` quebra o build se a regra de dependência for violada. Erros de domínio (`DomainError`) viram HTTP no `DomainExceptionFilter` do kit (400/403/404/409); OS Service indisponível vira **502**.
+`src/shared/architecture.spec.ts` quebra o build se a regra de dependência for violada. Erros de domínio (`DomainError`) viram HTTP no `DomainExceptionFilter` do kit (400/403/404/409); nas rotas `/execucao/ordens`, o `409` leva `{ motivo }` (contrato interno) e OS Service indisponível vira **502**.
 
 ## Modelo de dados (DynamoDB)
 
 Nome físico = `DYNAMODB_TABLE_PREFIX` + nome base (ou override completo `DYNAMODB_TABLE_<TABELA>`). A aplicação **assume que as tabelas existem**: em produção elas vêm do Terraform do `fase-04-soat-fiap-oficina-infra-db`; em dev/teste, do script `npm run dynamodb:create-tables`. As definições de referência (chaves e GSIs) ficam em [`src/dynamodb/definicoes-tabelas.ts`](src/dynamodb/definicoes-tabelas.ts).
 
-| Tabela                  | Chave                   | GSIs                                                                           | Item                                                                                                     |
-| ----------------------- | ----------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
-| `execucoes`             | `osId` (HASH)           | —                                                                              | `{ osId, mecanicoId, status, servicos[], estoqueBaixado, createdAt, updatedAt, versao }`                 |
-| `servicos`              | `servicoId` (HASH)      | —                                                                              | `{ servicoId, nome, descricao, precoBase, createdAt, updatedAt }`                                        |
-| `produtos`              | `produtoId` (HASH)      | —                                                                              | `{ produtoId, nome, sku, preco, quantidadeEstoque, createdAt, updatedAt }`                               |
-| `movimentacoes_estoque` | `movimentacaoId` (HASH) | `osId-data-index` (`osId`+`data`), `produtoId-data-index` (`produtoId`+`data`) | `{ movimentacaoId, produtoId, tipo (ENTRADA \| BAIXA \| DEVOLUCAO), quantidade, osId, servicoId, data }` |
+| Tabela                  | Chave                   | GSIs                                                                           | Item                                                                                                                                                           |
+| ----------------------- | ----------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `execucoes`             | `osId` (HASH)           | —                                                                              | `{ osId (= numeroOS), veiculoId, descricaoProblema, mecanicoId, status, diagnostico, servicos[], estoqueBaixado, finalizadaEm, createdAt, updatedAt, versao }` |
+| `servicos`              | `servicoId` (HASH)      | —                                                                              | `{ servicoId, nome, descricao, precoBase, createdAt, updatedAt }`                                                                                              |
+| `produtos`              | `produtoId` (HASH)      | —                                                                              | `{ produtoId, nome, sku, preco, quantidadeEstoque, createdAt, updatedAt }`                                                                                     |
+| `movimentacoes_estoque` | `movimentacaoId` (HASH) | `osId-data-index` (`osId`+`data`), `produtoId-data-index` (`produtoId`+`data`) | `{ movimentacaoId, produtoId, tipo (ENTRADA \| BAIXA \| DEVOLUCAO), quantidade, osId, servicoId, data }`                                                       |
 
 - `servicos[]` da execução é um **snapshot**: `{ servicoId, nome, preco, produtos: [{ produtoId, nome, sku, precoUnitario, quantidade }] }` — preço congelado no vínculo; editar/remover o catálogo não altera OS em andamento.
 - `versao` = **lock otimista** (`ConditionExpression: versao = :lida`): duas operações concorrentes na mesma OS → a segunda recebe `409`.
@@ -61,89 +61,90 @@ Se qualquer condição falhar, nada é gravado; `CancellationReasons` (com `Retu
 ## Máquina de estados da execução
 
 ```
-ATRIBUIDA ──► EM_DIAGNOSTICO ──► AGUARDANDO_APROVACAO ──► EM_EXECUCAO ──► EXECUTADA
-    │               │                    │
-    └───────────────┴────────────────────┴──► CANCELADA (rollback / orçamento reprovado)
+NA_FILA ──► ATRIBUIDA ──► EM_DIAGNOSTICO ──► AGUARDANDO_APROVACAO ──► EM_EXECUCAO ──► EXECUTADA
+   │            │               │                    │
+   └────────────┴───────────────┴────────────────────┴──► CANCELADA (DELETE do OS Service)
 ```
 
-`ATRIBUIDA → AGUARDANDO_APROVACAO` também é permitido (fechar o diagnóstico sem marcar `EM_DIAGNOSTICO`). Serviços e peças só podem ser alterados em `ATRIBUIDA`/`EM_DIAGNOSTICO`. `EXECUTADA` e `CANCELADA` são finais.
+- `NA_FILA`: enfileirada pelo OS Service (`execucao.enfileirar`), ainda sem mecânico.
+- `ATRIBUIDA`: mecânico assumiu/foi atribuído. O primeiro serviço vinculado move para `EM_DIAGNOSTICO`.
+- Serviços e peças só podem ser alterados em `ATRIBUIDA`/`EM_DIAGNOSTICO`. `EXECUTADA` e `CANCELADA` são finais.
 
-## Fluxo ponta a ponta
+## Fluxo ponta a ponta (contrato RFC-0008)
+
+O OS Service é o orquestrador da saga ([`docs/contratos/http-interno.md`](https://github.com/engineercodeprojects/fase-04-soat-fiap-oficina-os-service/blob/main/docs/contratos/http-interno.md)): ele **chama** a Execução nos comandos e a Execução **responde por callback** às ações do mecânico.
 
 ```mermaid
 sequenceDiagram
-  participant A as Admin
-  participant M as Mecânico
+  participant O as OS Service
   participant E as Execução
   participant D as DynamoDB
-  participant O as OS Service
-  A->>E: POST /execucoes/{osId}/atribuir-mecanico
-  E->>D: Put execucoes (ATRIBUIDA)
-  E->>O: PATCH /os/{osId}/mecanico
-  M->>E: POST /execucoes/{osId}/servicos  +  /servicos/{servicoId}/produtos
-  M->>E: POST /execucoes/{osId}/fechar-diagnostico
+  participant M as Mecânico
+  O->>E: POST /execucao/ordens {numeroOS, veiculoId, descricaoProblema}
+  E->>D: Put execucoes (NA_FILA)
+  E-->>O: 201 {numeroOS, posicaoFila} = execucao.enfileirada
+  M->>E: POST /execucao/ordens/{n}/atribuir-mecanico
+  M->>E: POST .../servicos  +  .../servicos/{servicoId}/produtos
+  M->>E: POST /execucao/ordens/{n}/diagnostico {diagnostico}
   E->>D: Put execucoes (AGUARDANDO_APROVACAO, lock otimista)
   E->>D: TransactWriteItems (baixa produtos + movimentacoes BAIXA)
-  E->>O: PATCH /os/{osId}/status AGUARDANDO_APROVACAO
-  alt orçamento reprovado
-    O->>E: POST /execucoes/{osId}/rollback (role SERVICO)
-    E->>D: Put execucoes (CANCELADA) + TransactWriteItems (devolução)
+  E->>O: POST /ordens-servico/{n}/eventos  execucao.diagnostico-concluido
+  alt orçamento reprovado / OS cancelada
+    O->>E: DELETE /execucao/ordens/{n} {motivo}
+    E->>D: Put execucoes (CANCELADA) + TransactWriteItems (DEVOLUCAO)
+    E-->>O: 200 = execucao.reservas-liberadas
   else aprovado
-    M->>E: POST /execucoes/{osId}/executar
-    E->>O: PATCH /os/{osId}/status EM_EXECUCAO
-    M->>E: POST /execucoes/{osId}/concluir
-    E->>O: PATCH /os/{osId}/status FINALIZADA (EXECUTADA local)
+    O->>E: POST /execucao/ordens/{n}/iniciar
+    E-->>O: 200 {numeroOS} = execucao.iniciada (EM_EXECUCAO)
+    M->>E: POST /execucao/ordens/{n}/finalizar
+    E->>O: POST /ordens-servico/{n}/eventos  execucao.finalizada
   end
 ```
 
-**Consistência com o OS Service:** cada operação grava primeiro o estado local (o lock otimista serializa operações concorrentes e impede baixa em dobro) e só então propaga. Se a propagação falhar, o estado local é **restaurado** e, no fechamento do diagnóstico, as peças são **devolvidas** ao estoque. Resposta: `409` se o OS Service recusou (4xx, mensagem com o `motivo`), `502` se ficou indisponível (timeout/rede/5xx após retries).
+- A **baixa** acontece no fechamento do diagnóstico; a **devolução**, no `DELETE` do OS Service. `iniciar` só muda o status (as peças já foram baixadas).
+- **Consistência:** cada operação grava primeiro o estado local (o lock otimista serializa operações concorrentes e impede baixa em dobro) e só então propaga. Se o callback falhar, o estado local é **restaurado** e as peças baixadas são **devolvidas**. Resposta: `409 { motivo }` se o OS recusou (4xx), `502` se ficou indisponível (timeout/rede/5xx após os retries).
+- **Recusa de negócio** = `409 { statusCode, message, motivo }` em todas as rotas de `/execucao/ordens` (o OS lê `motivo` para montar `execucao.recusada`).
+- **Idempotência:** `POST /execucao/ordens` por `numeroOS` (repetir devolve a mesma execução), `iniciar` repetido = `200`, `DELETE` repetido ou sem execução = `200` sem efeito (a devolução é o líquido do histórico).
 
 ## Integração com o OS Service
 
-O `OsServiceClient` ([`os-service.client.ts`](src/execucao/infrastructure/os-service/os-service.client.ts)) implementa a porta `OsServiceGateway` com axios:
+[`OsServiceClient`](src/execucao/infrastructure/os-service/os-service.client.ts) implementa a porta `OsServiceGateway` com o `ClienteHttpInterno` do kit (`HttpInternoModule` global):
 
-- `atribuirMecanico` → `PATCH {OS_SERVICE_URL}/os/{osId}/mecanico` body `{ "mecanicoId": "..." }`
-- `atualizarStatus` → `PATCH {OS_SERVICE_URL}/os/{osId}/status` body `{ "status": "..." }`
-- Auth: JWT de serviço (`role: SERVICO`, `sub: execucao-service`, mesmo `JWT_SECRET`, `EmissorTokenServico` do kit); header `x-correlation-id` = `osId`.
-- Retry com backoff (200 ms, 400 ms, ...) só para timeout/rede/5xx; 4xx não repete.
+| Callback `type`                  | Quando                                  | `data`                                                                                                                                                                                                                     |
+| -------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `execucao.diagnostico-concluido` | `POST /execucao/ordens/{n}/diagnostico` | `{ numeroOS, mecanicoId, diagnostico, itens[] }`. Cada item é `{ tipo: SERVICO\|PRODUTO, referenciaId, nome, quantidade, precoUnitario: "100.00", servicoId? }` (`servicoId` só nos PRODUTO, apontando para o serviço pai) |
+| `execucao.finalizada`            | `POST /execucao/ordens/{n}/finalizar`   | `{ numeroOS, finalizadaEm }`                                                                                                                                                                                               |
 
-> **Atenção — contrato a alinhar.** Na data desta implementação o `os-service` **não expõe** `PATCH /os/{id}/mecanico` nem `PATCH /os/{id}/status`: ele orquestra a saga (RFC-0008, `docs/contratos/http-interno.md`) chamando `POST /execucao/ordens`, `POST /execucao/ordens/{numeroOS}/iniciar` e `DELETE /execucao/ordens/{numeroOS}`, e recebe callbacks em `POST /ordens-servico/{numero}/eventos`. Por isso o cliente é **isolado e configurável** — método, paths e mapa de status vêm do ambiente, sem mudar código:
-
-| Variável                   | Default                      | Uso                                                                              |
-| -------------------------- | ---------------------------- | -------------------------------------------------------------------------------- |
-| `OS_SERVICE_HTTP_METHOD`   | `PATCH`                      | `PATCH`, `POST` ou `PUT`                                                         |
-| `OS_SERVICE_MECANICO_PATH` | `/os/{osId}/mecanico`        | `{osId}` é substituído (URL-encoded)                                             |
-| `OS_SERVICE_STATUS_PATH`   | `/os/{osId}/status`          |                                                                                  |
-| `OS_SERVICE_STATUS_MAP`    | `{"EXECUTADA":"FINALIZADA"}` | JSON status local → status da OS (demais enviados iguais; a OS usa `FINALIZADA`) |
-| `OS_SERVICE_TIMEOUT_MS`    | `5000`                       |                                                                                  |
-| `OS_SERVICE_RETRIES`       | `2`                          | retries extras para 5xx/timeout                                                  |
+- `POST {OS_SERVICE_URL}/ordens-servico/{numeroOS}/eventos` com o envelope `{ id (UUID v7), type, version: 1, occurredAt, producer: "execucao-service", data }` (`criarEnvelopeHttp`).
+- Auth: JWT de serviço (`role: SERVICO`, `sub: execucao-service`, mesmo `JWT_SECRET`). Header `x-correlation-id` = número da OS.
+- Retry com backoff (200 ms, 800 ms, 3 s) só para timeout/rede/5xx; 4xx não repete. `OS_SERVICE_TENTATIVAS` ajusta o número de tentativas.
 
 ## Rotas e roles
 
-Todas exigem `Authorization: Bearer <JWT>` (HS256, claims `sub`, `cpf`, `role`, `iss`, `exp`, validado com `JWT_SECRET`/`JWT_ISSUER`). Um `MECANICO` só opera execuções atribuídas a ele (`sub` = `mecanicoId`), senão `403`.
+Todas exigem `Authorization: Bearer <JWT>` (HS256, claims `sub`, `cpf`, `role`, `iss`, `exp`, validado com `JWT_SECRET`/`JWT_ISSUER`). Os prefixos `/execucao` e `/catalogo` são os que o API Gateway roteia para este serviço. Um `MECANICO` só opera execuções atribuídas a ele (`sub` = `mecanicoId`), senão `403`.
 
-| Método e rota                                        | Roles                       | Descrição                                                                |
-| ---------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------ |
-| `POST /execucoes/:osId/atribuir-mecanico`            | ADMIN                       | Cria a execução (ou reatribui durante o diagnóstico) e propaga           |
-| `GET /execucoes` `?mecanicoId&status`                | ADMIN, MECANICO             | Fila (MECANICO vê só as suas)                                            |
-| `GET /execucoes/:osId`                               | ADMIN, MECANICO, SERVICO    | Detalhe + `valorTotal` (mão de obra + peças)                             |
-| `PATCH /execucoes/:osId/status`                      | MECANICO, ADMIN             | `EM_DIAGNOSTICO`, `EM_EXECUCAO`, `EXECUTADA` (+ propaga)                 |
-| `POST /execucoes/:osId/servicos`                     | MECANICO, ADMIN             | Vincula N serviços do catálogo                                           |
-| `DELETE /execucoes/:osId/servicos/:servicoId`        | MECANICO, ADMIN             | Desvincula serviço                                                       |
-| `POST /execucoes/:osId/servicos/:servicoId/produtos` | MECANICO, ADMIN             | Vincula peças ao serviço (um produto pode atender vários serviços)       |
-| `POST /execucoes/:osId/fechar-diagnostico`           | MECANICO, ADMIN             | Baixa no estoque (transação) + OS → `AGUARDANDO_APROVACAO`               |
-| `POST /execucoes/:osId/rollback`                     | SERVICO, ADMIN              | Orçamento reprovado: devolve peças e marca `CANCELADA`                   |
-| `POST /execucoes/:osId/executar`                     | MECANICO, ADMIN             | `EM_EXECUCAO` + propaga                                                  |
-| `POST /execucoes/:osId/concluir`                     | MECANICO, ADMIN             | `EXECUTADA` + propaga                                                    |
-| `GET /execucoes/:osId/movimentacoes`                 | ADMIN, ESTOQUISTA, MECANICO | Movimentações de estoque da OS                                           |
-| `POST /servicos`, `PATCH/DELETE /servicos/:id`       | ADMIN                       | Catálogo de serviços                                                     |
-| `GET /servicos`, `GET /servicos/:id`                 | ADMIN, MECANICO, ESTOQUISTA |                                                                          |
-| `POST /produtos`, `PATCH /produtos/:id`              | ADMIN, ESTOQUISTA           | Catálogo de produtos (saldo inicial na criação; PATCH não mexe no saldo) |
-| `DELETE /produtos/:id`                               | ADMIN                       |                                                                          |
-| `GET /produtos`, `GET /produtos/:id`                 | ADMIN, ESTOQUISTA, MECANICO |                                                                          |
-| `POST /produtos/:id/entradas`                        | ADMIN, ESTOQUISTA           | Reposição (movimentação `ENTRADA`, transacional)                         |
-| `GET /produtos/:id/movimentacoes`                    | ADMIN, ESTOQUISTA           | Extrato do produto                                                       |
-| `GET /health`, `/health/ready`, `/metrics`           | público                     | Liveness, readiness (`DescribeTable`), Prometheus                        |
+| Método e rota                                                    | Roles                       | Descrição                                                                   |
+| ---------------------------------------------------------------- | --------------------------- | --------------------------------------------------------------------------- |
+| `POST /execucao/ordens`                                          | SERVICO, ADMIN              | `execucao.enfileirar` → `201 { numeroOS, posicaoFila }` / `409 { motivo }`  |
+| `POST /execucao/ordens/:numeroOS/iniciar`                        | SERVICO, ADMIN              | `execucao.iniciar` → `EM_EXECUCAO`                                          |
+| `DELETE /execucao/ordens/:numeroOS` `{ motivo? }`                | SERVICO, ADMIN              | `execucao.liberar-reservas`: devolve as peças e marca `CANCELADA`           |
+| `GET /execucao/ordens` `?mecanicoId&status`                      | ADMIN, MECANICO             | Fila (MECANICO vê as suas e as `NA_FILA`)                                   |
+| `GET /execucao/ordens/:numeroOS`                                 | ADMIN, MECANICO, SERVICO    | Detalhe + `valorTotal` (mão de obra + peças)                                |
+| `POST /execucao/ordens/:numeroOS/atribuir-mecanico`              | ADMIN, MECANICO             | Tira da fila (MECANICO só atribui a si mesmo)                               |
+| `POST /execucao/ordens/:numeroOS/servicos`                       | MECANICO, ADMIN             | Vincula N serviços do catálogo                                              |
+| `DELETE /execucao/ordens/:numeroOS/servicos/:servicoId`          | MECANICO, ADMIN             | Desvincula serviço                                                          |
+| `POST /execucao/ordens/:numeroOS/servicos/:servicoId/produtos`   | MECANICO, ADMIN             | Vincula peças ao serviço (um produto pode atender vários serviços)          |
+| `POST /execucao/ordens/:numeroOS/diagnostico` `{ diagnostico }`  | MECANICO, ADMIN             | Baixa no estoque (transação) + callback `execucao.diagnostico-concluido`    |
+| `POST /execucao/ordens/:numeroOS/finalizar`                      | MECANICO, ADMIN             | `EXECUTADA` + callback `execucao.finalizada`                                |
+| `GET /execucao/ordens/:numeroOS/movimentacoes`                   | ADMIN, ESTOQUISTA, MECANICO | Movimentações de estoque da OS                                              |
+| `POST /catalogo/servicos`, `PATCH/DELETE /catalogo/servicos/:id` | ADMIN                       | Catálogo de serviços                                                        |
+| `GET /catalogo/servicos`, `GET /catalogo/servicos/:id`           | ADMIN, MECANICO, ESTOQUISTA |                                                                             |
+| `POST /catalogo/produtos`, `PATCH /catalogo/produtos/:id`        | ADMIN, ESTOQUISTA           | Catálogo de produtos (saldo inicial na criação; o PATCH não altera o saldo) |
+| `DELETE /catalogo/produtos/:id`                                  | ADMIN                       |                                                                             |
+| `GET /catalogo/produtos`, `GET /catalogo/produtos/:id`           | ADMIN, ESTOQUISTA, MECANICO |                                                                             |
+| `POST /catalogo/produtos/:id/entradas`                           | ADMIN, ESTOQUISTA           | Reposição (movimentação `ENTRADA`, transacional)                            |
+| `GET /catalogo/produtos/:id/movimentacoes`                       | ADMIN, ESTOQUISTA           | Extrato do produto                                                          |
+| `GET /health`, `/health/ready`, `/metrics`                       | público                     | Liveness, readiness (`DescribeTable`), Prometheus                           |
 
 ## Variáveis de ambiente
 
@@ -190,44 +191,49 @@ API=http://localhost:3002
 
 ```bash
 # Catálogo
-curl -s -X POST $API/servicos -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+curl -s -X POST $API/catalogo/servicos -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
   -d '{"nome":"Troca de oleo","descricao":"Oleo + filtro","precoBase":120}'
-curl -s $API/servicos -H "Authorization: Bearer $MEC"
-curl -s -X PATCH $API/servicos/$SERVICO_ID -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"precoBase":130}'
-curl -s -X DELETE $API/servicos/$SERVICO_ID -H "Authorization: Bearer $ADMIN"
+curl -s $API/catalogo/servicos -H "Authorization: Bearer $MEC"
+curl -s -X PATCH $API/catalogo/servicos/$SERVICO_ID -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"precoBase":130}'
+curl -s -X DELETE $API/catalogo/servicos/$SERVICO_ID -H "Authorization: Bearer $ADMIN"
 
-curl -s -X POST $API/produtos -H "Authorization: Bearer $EST" -H 'Content-Type: application/json' \
+curl -s -X POST $API/catalogo/produtos -H "Authorization: Bearer $EST" -H 'Content-Type: application/json' \
   -d '{"nome":"Oleo 5W30 1L","sku":"OL-5W30","preco":45.9,"quantidadeEstoque":10}'
-curl -s -X POST $API/produtos/$PRODUTO_ID/entradas -H "Authorization: Bearer $EST" -H 'Content-Type: application/json' -d '{"quantidade":5}'
-curl -s $API/produtos/$PRODUTO_ID/movimentacoes -H "Authorization: Bearer $EST"
+curl -s -X POST $API/catalogo/produtos/$PRODUTO_ID/entradas -H "Authorization: Bearer $EST" -H 'Content-Type: application/json' -d '{"quantidade":5}'
+curl -s $API/catalogo/produtos/$PRODUTO_ID/movimentacoes -H "Authorization: Bearer $EST"
 
-# Execução da OS 42
-curl -s -X POST $API/execucoes/42/atribuir-mecanico -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"mecanicoId":"mec-1"}'
-curl -s -X PATCH $API/execucoes/42/status -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' -d '{"status":"EM_DIAGNOSTICO"}'
-curl -s -X POST $API/execucoes/42/servicos -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' -d "{\"servicoIds\":[\"$SERVICO_ID\"]}"
-curl -s -X POST $API/execucoes/42/servicos/$SERVICO_ID/produtos -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' \
+# OS Service enfileira a OS-2026-0042
+curl -s -X POST $API/execucao/ordens -H "Authorization: Bearer $SVC" -H 'Content-Type: application/json' \
+  -d '{"numeroOS":"OS-2026-0042","veiculoId":"vei-1","descricaoProblema":"Barulho ao frear"}'
+
+# Mecânico assume e diagnostica
+N=OS-2026-0042
+curl -s -X POST $API/execucao/ordens/$N/atribuir-mecanico -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' -d '{"mecanicoId":"mec-1"}'
+curl -s -X POST $API/execucao/ordens/$N/servicos -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' -d "{\"servicoIds\":[\"$SERVICO_ID\"]}"
+curl -s -X POST $API/execucao/ordens/$N/servicos/$SERVICO_ID/produtos -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' \
   -d "{\"produtos\":[{\"produtoId\":\"$PRODUTO_ID\",\"quantidade\":4}]}"
-curl -s -X POST $API/execucoes/42/fechar-diagnostico -H "Authorization: Bearer $MEC"   # baixa no estoque
-curl -s $API/execucoes/42 -H "Authorization: Bearer $MEC"                              # valorTotal = orçamento
+curl -s -X POST $API/execucao/ordens/$N/diagnostico -H "Authorization: Bearer $MEC" -H 'Content-Type: application/json' \
+  -d '{"diagnostico":"Oleo vencido"}'                      # baixa no estoque + callback
+curl -s $API/execucao/ordens/$N -H "Authorization: Bearer $MEC"   # valorTotal = orçamento
 
-# Orçamento reprovado (chamado pelo OS Service)
-curl -s -X POST $API/execucoes/42/rollback -H "Authorization: Bearer $SVC"
+# Orçamento reprovado / OS cancelada (OS Service)
+curl -s -X DELETE $API/execucao/ordens/$N -H "Authorization: Bearer $SVC" -H 'Content-Type: application/json' -d '{"motivo":"Orcamento reprovado"}'
 
 # ...ou aprovado
-curl -s -X POST $API/execucoes/42/executar -H "Authorization: Bearer $MEC"
-curl -s -X POST $API/execucoes/42/concluir -H "Authorization: Bearer $MEC"
-curl -s "$API/execucoes?status=EXECUTADA" -H "Authorization: Bearer $ADMIN"
+curl -s -X POST $API/execucao/ordens/$N/iniciar -H "Authorization: Bearer $SVC"
+curl -s -X POST $API/execucao/ordens/$N/finalizar -H "Authorization: Bearer $MEC"   # callback execucao.finalizada
+curl -s "$API/execucao/ordens?status=EXECUTADA" -H "Authorization: Bearer $ADMIN"
 ```
 
 ## Testes
 
 ```bash
 npm run test:unit:cov      # domínio + casos de uso + OsServiceClient (gate 80%)
-npm run test:integration   # e2e: AppModule real + DynamoDB Local + mock HTTP do OS Service
+npm run test:integration   # e2e: AppModule real + DynamoDB Local + OS Service fake (recebe os callbacks)
 ```
 
-- **Unitários:** máquina de estados, agregado `Execucao`, validação de saldo, planejamento de baixa/devolução (idempotência), casos de uso com fakes (compensações quando o OS falha, concorrência), `OsServiceClient` contra um servidor HTTP fake (paths, mapa de status, retry, 4xx/5xx).
-- **e2e** (`*.e2e.spec.ts`): sobe `amazon/dynamodb-local` via testcontainers (ou usa `DYNAMODB_ENDPOINT` se definido, ex. `docker compose up -d dynamodb`), cria as tabelas com prefixo próprio e cobre: fluxo feliz completo, estoque insuficiente (nada baixado), rollback idempotente, OS Service fora do ar (502 + devolução), roles por rota, CRUDs.
+- **Unitários:** máquina de estados, agregado `Execucao`, validação de saldo, planejamento de baixa/devolução (idempotência), casos de uso com fakes (compensações quando o callback falha, idempotência, fila), `OsServiceClient` contra um servidor HTTP fake (envelope, JWT, correlação, retry, 4xx/5xx), filtro `409 { motivo }`.
+- **e2e** (`*.e2e.spec.ts`): sobe `amazon/dynamodb-local` via testcontainers (ou usa `DYNAMODB_ENDPOINT` se definido, ex. `docker compose up -d dynamodb`), cria as tabelas com prefixo próprio e cobre: fluxo completo do contrato (enfileirar → diagnóstico → iniciar → finalizar, com os callbacks verificados), veículo duplicado, estoque insuficiente (nada baixado), `DELETE` idempotente, OS Service fora do ar (502 + devolução), roles por rota, CRUDs.
 
 ## Deploy
 

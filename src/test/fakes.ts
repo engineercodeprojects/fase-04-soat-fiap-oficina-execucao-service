@@ -1,8 +1,10 @@
 import { Execucao } from '../execucao/domain/execucao.entity';
 import { ExecucaoRepository, FiltroExecucoes } from '../execucao/domain/execucao.repository';
 import { ExecucaoAlteradaConcorrentementeError } from '../execucao/domain/errors/execucao-alterada-concorrentemente.error';
-import { OsServiceGateway } from '../execucao/application/ports/os-service.gateway';
-import { StatusExecucao } from '../execucao/domain/status-execucao';
+import {
+  DiagnosticoConcluido,
+  OsServiceGateway,
+} from '../execucao/application/ports/os-service.gateway';
 import { Produto } from '../produto/domain/produto.entity';
 import { EstoqueRepository, ProdutoRepository } from '../produto/domain/produto.repository';
 import { MovimentacaoEstoque, deltaDoSaldo } from '../produto/domain/movimentacao-estoque';
@@ -121,7 +123,9 @@ export class InMemoryExecucaoRepository implements ExecucaoRepository {
     return [...this.itens.values()]
       .filter(
         (p) =>
-          (!f.mecanicoId || p.mecanicoId === f.mecanicoId) && (!f.status || p.status === f.status),
+          (!f.mecanicoId || p.mecanicoId === f.mecanicoId) &&
+          (!f.veiculoId || p.veiculoId === f.veiculoId) &&
+          (!f.status || p.status === f.status),
       )
       .map((p) => Execucao.reconstituir(p));
   }
@@ -131,14 +135,15 @@ export class InMemoryExecucaoRepository implements ExecucaoRepository {
 }
 
 export class FakeOsGateway implements OsServiceGateway {
-  readonly chamadas: { tipo: 'mecanico' | 'status'; osId: string; valor: string }[] = [];
+  readonly diagnosticos: DiagnosticoConcluido[] = [];
+  readonly finalizadas: { numeroOS: string; finalizadaEm: string }[] = [];
   falha?: Error;
-  async atribuirMecanico(osId: string, mecanicoId: string) {
+  async diagnosticoConcluido(evento: DiagnosticoConcluido) {
     if (this.falha) throw this.falha;
-    this.chamadas.push({ tipo: 'mecanico', osId, valor: mecanicoId });
+    this.diagnosticos.push(evento);
   }
-  async atualizarStatus(osId: string, status: StatusExecucao) {
+  async execucaoFinalizada(evento: { numeroOS: string; finalizadaEm: string }) {
     if (this.falha) throw this.falha;
-    this.chamadas.push({ tipo: 'status', osId, valor: status });
+    this.finalizadas.push(evento);
   }
 }

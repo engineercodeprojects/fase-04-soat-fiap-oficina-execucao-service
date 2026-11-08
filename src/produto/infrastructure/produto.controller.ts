@@ -37,7 +37,7 @@ import { ListarMovimentacoesUseCase } from '../application/use-cases/listar-movi
 @ApiBearerAuth()
 @ApiUnauthorizedResponse({ description: 'Token JWT ausente ou invalido' })
 @ApiForbiddenResponse({ description: 'Role insuficiente' })
-@Controller('produtos')
+@Controller('catalogo/produtos')
 export class ProdutoController {
   constructor(
     private readonly criar: CriarProdutoUseCase,

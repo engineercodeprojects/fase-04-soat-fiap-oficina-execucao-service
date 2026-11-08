@@ -4,7 +4,6 @@ import {
   ArrayNotEmpty,
   IsArray,
   IsEnum,
-  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -13,7 +12,31 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { StatusExecucao } from '../../domain/status-execucao';
-import { STATUS_ALTERAVEIS_DIRETAMENTE } from '../../application/use-cases/atualizar-status-execucao.use-case';
+
+/** Corpo de `execucao.enfileirar` (contrato http-interno do OS Service). */
+export class EnfileirarExecucaoDto {
+  @ApiProperty({ example: 'OS-2026-0001' })
+  @IsString()
+  @IsNotEmpty()
+  numeroOS: string;
+
+  @ApiProperty({ example: '7b2f0c1e-...' })
+  @IsString()
+  @IsNotEmpty()
+  veiculoId: string;
+
+  @ApiPropertyOptional({ example: 'Barulho ao frear' })
+  @IsString()
+  @IsOptional()
+  descricaoProblema?: string;
+}
+
+export class LiberarExecucaoDto {
+  @ApiPropertyOptional({ example: 'Orcamento reprovado pelo cliente' })
+  @IsString()
+  @IsOptional()
+  motivo?: string;
+}
 
 export class AtribuirMecanicoDto {
   @ApiProperty({
@@ -25,10 +48,11 @@ export class AtribuirMecanicoDto {
   mecanicoId: string;
 }
 
-export class AtualizarStatusDto {
-  @ApiProperty({ enum: STATUS_ALTERAVEIS_DIRETAMENTE, example: StatusExecucao.EM_EXECUCAO })
-  @IsIn(STATUS_ALTERAVEIS_DIRETAMENTE)
-  status: (typeof STATUS_ALTERAVEIS_DIRETAMENTE)[number];
+export class ConcluirDiagnosticoDto {
+  @ApiProperty({ description: 'Laudo do diagnostico', example: 'Pastilhas gastas; oleo vencido' })
+  @IsString()
+  @IsNotEmpty()
+  diagnostico: string;
 }
 
 export class VincularServicosDto {

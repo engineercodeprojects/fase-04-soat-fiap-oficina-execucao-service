@@ -5,6 +5,7 @@ export const EXECUCAO_REPOSITORY = Symbol('EXECUCAO_REPOSITORY');
 
 export interface FiltroExecucoes {
   mecanicoId?: string;
+  veiculoId?: string;
   status?: StatusExecucao;
 }
 
