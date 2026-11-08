@@ -7,9 +7,14 @@ module.exports = {
   testRegex: '.*\\.(integration|e2e)\\.spec\\.ts$',
   transform: { '^.+\\.ts$': 'ts-jest' },
   setupFiles: ['<rootDir>/test/jest-setup-env.ts'],
-  collectCoverageFrom: ['**/infrastructure/prisma-*.repository.ts', '!**/generated/**'],
+  collectCoverageFrom: [
+    '**/infrastructure/dynamodb-*.repository.ts',
+    '**/infrastructure/*.controller.ts',
+    'dynamodb/**/*.ts',
+    '!dynamodb/create-tables.cli.ts',
+  ],
   coverageDirectory: '../coverage/integration',
   testTimeout: 60000,
-  // Cada spec sobe seu proprio Postgres via testcontainers — serializado e estavel.
+  // DynamoDB Local (testcontainers ou DYNAMODB_ENDPOINT) — serializado e estavel.
   maxWorkers: 1,
 };

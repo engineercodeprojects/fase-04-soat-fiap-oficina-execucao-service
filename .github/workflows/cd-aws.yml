@@ -1,7 +1,7 @@
 name: CD - AWS (ECR + EKS)
 
 # Deploy automatico (US-F4-04): push em `homolog` -> homologacao, push em `main`
-# -> producao. Build -> ECR -> EKS (kustomize) -> migrations -> smoke test.
+# -> producao. Build -> ECR -> EKS (kustomize) -> smoke test.
 # Gerado pelo template do kit; mesmas guardas do monolito da Fase 3.
 #
 # Cada etapa e guardada: sem credenciais AWS o run avisa e nao falha; sem
@@ -131,26 +131,6 @@ jobs:
           set -euo pipefail
           kubectl get namespace oficina >/dev/null 2>&1 || kubectl create namespace oficina
 
-          # --- oficina-execucao-service-db: DATABASE_URL do banco PROPRIO (repo soat-fiap-oficina-infra-db)
-          if [ -z "${DB_SECRET_ID}" ]; then
-            echo "::error::Defina a var DB_SECRET_ID (secret do RDS no Secrets Manager)."; exit 1
-          fi
-          DB_JSON=$(aws secretsmanager get-secret-value --secret-id "$DB_SECRET_ID" \
-                      --query SecretString --output text)
-          DATABASE_URL=$(printf '%s' "$DB_JSON" | jq -r '.DATABASE_URL // empty')
-          if [ -z "$DATABASE_URL" ]; then
-            # Secret gerenciado pelo RDS (username/password/host/port/dbname).
-            DATABASE_URL=$(printf '%s' "$DB_JSON" | jq -r '
-              "postgresql://\(.username):\(.password|@uri)@\(.host):\(.port // 5432)/\(.dbname // "oficina_execucao")?schema=public"')
-          fi
-          DB_HOST=$(printf '%s' "$DATABASE_URL" | sed -E 's|.*@([^:/]+).*|\1|')
-          DB_PORT=$(printf '%s' "$DATABASE_URL" | sed -E 's|.*:([0-9]+)/.*|\1|')
-          kubectl -n oficina create secret generic oficina-execucao-service-db \
-            --from-literal=DATABASE_URL="$DATABASE_URL" \
-            --from-literal=DB_HOST="$DB_HOST" \
-            --from-literal=DB_PORT="${DB_PORT:-5432}" \
-            --dry-run=client -o yaml | kubectl apply -f -
-
           # --- oficina-execucao-service-app: JWT compartilhado com a Lambda
           JWT_SECRET=$(aws secretsmanager get-secret-value --secret-id "${JWT_SECRET_ID:-$DB_SECRET_ID}" \
                         --query SecretString --output text \
@@ -170,17 +150,13 @@ jobs:
           YAML
           sed -i 's/^          //' k8s/secret.yaml
 
-      - name: Deploy (kustomize) + migrations
+      - name: Deploy (kustomize)
         if: steps.guard.outputs.configured == 'true' && steps.guard.outputs.eks == 'true'
         run: |
           set -euo pipefail
           cd k8s-aws
           kustomize edit set image "oficina-execucao-service=$registry/$ECR_REPOSITORY:$IMAGE_TAG"
-          # migrations-job e imutavel: apaga o anterior e deixa o kustomize recria-lo
-          # ja com a imagem do ECR (aplicar o YAML da base usaria a tag local do kind).
-          kubectl -n oficina delete job oficina-execucao-service-migrations --ignore-not-found
           kubectl apply -k .
-          kubectl -n oficina wait --for=condition=complete job/oficina-execucao-service-migrations --timeout=300s
           # ConfigMap/Secret via envFrom so entram em pods novos: quando o deploy
           # e re-disparado no mesmo commit (ex.: GATEWAY_URL nova), a imagem nao
           # muda e nada reiniciaria. Rolling restart e zero-downtime (maxUnavailable 0).

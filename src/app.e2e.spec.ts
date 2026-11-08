@@ -4,7 +4,7 @@ import request from 'supertest';
 import { mintToken } from '@guilhermeqmaia/oficina-kit/testing';
 import { Role } from '@guilhermeqmaia/oficina-kit/auth';
 import { AppModule } from './app.module';
-import { startTestDatabase, stopTestDatabase } from './test/database.container';
+import { iniciarDynamoDbDeTeste, pararDynamoDbDeTeste } from './test/dynamodb.container';
 
 jest.setTimeout(120000);
 
@@ -22,7 +22,7 @@ describe('oficina-execucao-service (e2e)', () => {
   let app: INestApplication;
 
   beforeAll(async () => {
-    process.env.DATABASE_URL = await startTestDatabase();
+    await iniciarDynamoDbDeTeste('e2e-app-');
     const ref = await Test.createTestingModule({
       imports: [AppModule],
       controllers: [ProtegidoController],
@@ -32,7 +32,7 @@ describe('oficina-execucao-service (e2e)', () => {
   });
   afterAll(async () => {
     await app.close();
-    await stopTestDatabase();
+    await pararDynamoDbDeTeste();
   });
 
   it('GET /health e /health/ready (banco proprio) sao publicos', async () => {

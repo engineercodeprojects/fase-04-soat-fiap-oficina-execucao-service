@@ -13,7 +13,13 @@ module.exports = {
     '!main.ts',
     '!**/*.module.ts',
     '!**/test/**',
-    '!**/prisma/**', // PrismaService e infra: coberto pelo e2e (testcontainers)
+    // Adapters DynamoDB e CLI: cobertos pelos e2e contra o DynamoDB Local.
+    '!**/infrastructure/dynamodb-*.repository.ts',
+    '!dynamodb/**',
+    // Controllers/DTOs/presenters (borda HTTP): cobertos pelos e2e.
+    '!**/infrastructure/*.controller.ts',
+    '!**/infrastructure/dto/**',
+    '!**/infrastructure/presenters/**',
     '!**/*.spec.ts',
   ],
   coverageDirectory: '../coverage/unit',

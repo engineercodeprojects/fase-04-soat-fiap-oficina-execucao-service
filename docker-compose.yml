@@ -1,14 +1,20 @@
-# Desenvolvimento local: Postgres proprio. O servico roda fora do compose
-# (`npm run start:dev`). Sem broker: a comunicacao com o OS Service e HTTP
-# (RFC-0008) — aponte OS_SERVICE_URL para o OS rodando localmente.
+# Desenvolvimento local: DynamoDB Local (banco proprio deste servico). O servico
+# roda fora do compose (`npm run start:dev`). Depois de subir, crie as tabelas:
+# `npm run dynamodb:create-tables`. Sem broker: a comunicacao com o OS Service
+# e HTTP (RFC-0008) — aponte OS_SERVICE_URL para o OS rodando localmente.
 services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      { POSTGRES_USER: postgres, POSTGRES_PASSWORD: postgres, POSTGRES_DB: oficina_execucao }
-    ports: ['5432:5432']
-    volumes: ['pgdata:/var/lib/postgresql/data']
-    healthcheck:
-      { test: ['CMD-SHELL', 'pg_isready -U postgres'], interval: 5s, timeout: 5s, retries: 10 }
+  dynamodb:
+    image: amazon/dynamodb-local:2.5.4
+    command: ['-jar', 'DynamoDBLocal.jar', '-sharedDb', '-dbPath', '/home/dynamodblocal/data']
+    working_dir: /home/dynamodblocal
+    user: root
+    ports: ['8000:8000']
+    volumes: ['dynamodb-data:/home/dynamodblocal/data']
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:5.1.3
+    profiles: ['admin']
+    environment: { DYNAMO_ENDPOINT: 'http://dynamodb:8000', AWS_REGION: 'us-east-1' }
+    ports: ['8001:8001']
+    depends_on: [dynamodb]
 volumes:
-  pgdata:
+  dynamodb-data:
